@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 
 # Paths
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(__file__).parent.parent
 FOOD_PREDS_DIR = BASE_DIR.parent / "food_preds"
 MODELS_DIR = FOOD_PREDS_DIR / "results"
+SECRETS_DIR = BASE_DIR / "secrets"
 
 # Model configurations
 MODEL_CONFIGS = {
@@ -114,58 +115,58 @@ PROMPTS = {
     - weight_goal: 'lose', 'maintain', or 'gain'
     - dietary_restrictions: list of restrictions (vegetarian, vegan, gluten-free, etc.)
     - preferred_cuisines: list of preferred cuisines
-    
+
     User message: {user_message}
-    
+
     If any information is missing, ask the user to provide it.
     """,
-    
+
     'daily_constraints_extraction': """
     Extract daily constraints and previous day's results from the user's message:
-    
+
     Daily constraints to look for:
     - Available cooking time
     - Dietary preferences for today
     - Special requirements or restrictions
     - Preferred meal times
-    
+
     Previous day's results to look for:
     - Weight change
     - Energy levels
     - Adherence to previous plan
     - How they felt
-    
+
     User message: {user_message}
     """,
-    
+
     'meal_suggestions': """
     Generate {num_suggestions} meal suggestions for {meal_type} with the following criteria:
     - Target calories: approximately {target_calories}
     - Dietary restrictions: {dietary_restrictions}
     - Preferred cuisines: {preferred_cuisines}
     - Maximum cooking time: {max_cooking_time} minutes
-    
+
     For each suggestion, provide:
     1. Recipe name
     2. Brief description
     3. Estimated prep and cook time
     4. Main ingredients
     5. Approximate nutritional info
-    
+
     Format as a structured list.
     """,
-    
+
     'nutritional_analysis': """
     Calculate the approximate nutritional values for this entire meal plan:
-    
+
     {meal_plan}
-    
+
     Provide:
     - Total calories
     - Total protein (g)
     - Total carbohydrates (g)
     - Total fat (g)
-    
+
     Also provide a brief analysis of how well this meal plan aligns with the user's goals.
     """
 }
