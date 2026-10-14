@@ -1,6 +1,6 @@
 # Food Vision
 
-This benchmark compares five approaches for estimating whole-dish calories,
+This benchmark compares six approaches for estimating whole-dish calories,
 mass, fat, carbohydrate and protein from one RGB photo. It measures performance
 on Nutrition5k; accuracy on web or phone photos requires a separate evaluation.
 
@@ -27,6 +27,25 @@ hosted OpenRouter/Groq models and local Qwen.
 
 **Training:** this pipeline uses existing pretrained checkpoints as supplied.
 Implementation: [vlm_analyzer.py](vlm_analyzer.py).
+
+### Guided single-shot VLM (`vlm_single_guided`)
+
+This is a separate benchmark method that keeps the same image, model, output
+schema and one-request pipeline as `vlm_single`. Its system prompt asks the
+model to treat the image as one person's meal, identify visible components,
+estimate each component's mass, estimate nutrients per 100 g, scale those
+values to the estimated mass, then total the meal. Five generic text examples
+illustrate portion sizes and internally consistent nutrient calculations.
+They are prompt examples, not Nutrition5k test labels. The model returns only
+the requested JSON, not its intermediate reasoning.
+
+The method always requests high reasoning. OpenRouter and Groq receive their
+`high` setting. The pinned local Qwen3.8 chat template supports `low`, `medium`
+and `xhigh`, so the local run uses `xhigh`, its highest supported setting
+([model chat template](https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/chat_template.jinja)).
+The selected effort is saved in the run configuration and shown in the report.
+Consequently, the paired comparison evaluates the prompt and reasoning changes
+together, not the prompt in isolation.
 
 ### RGB regression (`rgb_regression`)
 
@@ -209,9 +228,9 @@ some paper settings; published paper scores are not substituted for our runs.
 ## Results
 
 [The 500-dish Qwen comparison](nutrition5k_500_qwen_results.md) includes the local
-Qwen single-shot baseline, RGB regression, Food-R1, FoodLMM precision variants
-and DPF. The report generator writes `nutrition5k_500_qwen_results.json` locally
-with predictions, failures and configurations.
+Qwen single-shot baseline and guided variant, RGB regression, Food-R1, FoodLMM
+precision variants and DPF. The report generator writes
+`nutrition5k_500_qwen_results.json` with predictions, failures and configurations.
 
 ## Run the benchmark
 
@@ -227,6 +246,9 @@ PYTHONPATH=. uv run python nut_agent/nutricoach/food_vision/evaluate_nutrition5k
 PYTHONPATH=. uv run python nut_agent/nutricoach/food_vision/evaluate_nutrition5k.py \
     --methods vlm_single --provider local --model Qwen/Qwen3.8-27B \
     --reasoning-effort none --workers 1 --device cuda --output-dir /path/to/qwen-run
+PYTHONPATH=. uv run python nut_agent/nutricoach/food_vision/evaluate_nutrition5k.py \
+    --methods vlm_single_guided --provider local --model Qwen/Qwen3.8-27B \
+    --reasoning-effort none --workers 1 --device cuda --output-dir /path/to/qwen-guided-run
 PYTHONPATH=. uv run python nut_agent/nutricoach/food_vision/evaluate_paper_system.py \
     --method dpf_reproduction --device auto --output-dir /path/to/dpf-run
 PYTHONPATH=. uv run python nut_agent/nutricoach/food_vision/report_nutrition5k.py \
@@ -245,11 +267,18 @@ retries failures. Use a new output directory when code or configuration changes.
 For offline GPU jobs, prepare assets with [prepare_benchmark_assets.py](prepare_benchmark_assets.py)
 and submit [nutrition5k_jean_zay.sbatch](jobs/nutrition5k_jean_zay.sbatch) using
 an account and GPU allocation appropriate to your site.
+The guided prompt's current partial comparison has 47 paired predictions; its
+calories, mass and fat MAEs are recorded in
+[the Qwen results report](nutrition5k_500_qwen_results.md). The remaining
+benchmark run was canceled, so these values are preliminary.
 
-## FoodLMM in NutriCoach
+## Food vision methods in NutriCoach
 
-NutriCoach's Food Analysis tab offers FoodLMM 4-bit (default) and DPF reproduction,
-independently of the chat provider. DPF uses the existing RGB and predicted-depth
+NutriCoach's Food Analysis tab offers a one-shot VLM, FoodLMM 4-bit and DPF reproduction.
+The VLM uses the provider and model selected in the sidebar, always with high reasoning;
+its guided portion-first prompt is on by default and can be disabled. The results table
+shows each detected food in its first column. FoodLMM and DPF run locally, independently
+of the chat provider. DPF uses the existing RGB and predicted-depth
 adapter in the main environment, downloads its assets on first use, and reuses
 its loaded model. Switching methods clears the previous result.
 The adapters return whole-dish totals; users can review,

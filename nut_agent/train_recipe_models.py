@@ -10,7 +10,7 @@ they were trained on. recipe_models_meta.json records the embedding backend,
 label order, nutrient targets, and test metrics for the predictor.
 
 Run:
-    CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. uv run python ml_pipeline/train_recipe_models.py
+    CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. uv run python nut_agent/train_recipe_models.py
 """
 
 import ast
@@ -23,19 +23,19 @@ from pathlib import Path
 
 import numpy as np
 
-ML_PIPELINE_DIR = Path(__file__).parent
-os.chdir(ML_PIPELINE_DIR)
-sys.path.insert(0, str(ML_PIPELINE_DIR))
-sys.path.insert(0, str(ML_PIPELINE_DIR.parent / "nut_agent"))
+APP_DIR = Path(__file__).parent
+sys.path.insert(0, str(APP_DIR))
 
 import torch
 from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, r2_score
 
-from utils.data import load_csv, LabelEncoderHelper, filter_meal_types
-from utils.metrics import METRIC_REGISTRY
-from utils.utils import load_model_by_name
-from pipelines_torch.models import MODEL_REGISTRY
-from pipelines_torch.benchmark import BenchmarkRunner
+from ml_pipeline.utils.data import load_csv, LabelEncoderHelper, filter_meal_types
+from ml_pipeline.utils.metrics import METRIC_REGISTRY
+from ml_pipeline.utils.utils import load_model_by_name
+from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
+from ml_pipeline.pipelines_torch.benchmark import BenchmarkRunner
+
+from shared.config import MODELS_DIR, RECIPE_DATA_PATH
 
 from recipe_lab.predictor import LocalEmbedder, LOCAL_EMBEDDING_MODEL
 
@@ -137,9 +137,9 @@ def parse_nutrients(x):
 def embed_texts(embedder, df, cache_name):
     """Embed recipe_text with an on-disk cache to make reruns cheap."""
     backend_slug = "jina" if embedder.is_jina else "bge"
-    cache = ML_PIPELINE_DIR / "results" / f"_emb_cache_{backend_slug}_{cache_name}.npy"
+    cache = MODELS_DIR / f"_emb_cache_{backend_slug}_{cache_name}.npy"
     if backend_slug == "bge":
-        legacy = ML_PIPELINE_DIR / "results" / f"_emb_cache_{cache_name}.npy"
+        legacy = MODELS_DIR / f"_emb_cache_{cache_name}.npy"
         if legacy.exists() and not cache.exists():
             cache = legacy
     texts = df["recipe_text"].fillna("").tolist()
@@ -231,7 +231,7 @@ def model_configs(input_dim, num_classes):
 def evaluate_checkpoint(path_start, model_name, X_test, y_test):
     model = load_model_by_name(
         MODEL_REGISTRY[f"{model_name}_classifier"],
-        model_name, {}, path_start=path_start, task_type="classification",
+        model_name, {}, path_start=str(MODELS_DIR / path_start), task_type="classification",
     )
     preds = model.predict(X_test)
     preds = np.asarray(preds)
@@ -252,13 +252,13 @@ def main():
 
     # Checkpoints are only valid for the embeddings they were trained on
     for task in TASKS.values():
-        stale = ML_PIPELINE_DIR / "results" / task["path_start"]
+        stale = MODELS_DIR / task["path_start"]
         if stale.exists():
             shutil.rmtree(stale)
 
-    train_df = load_csv("recipes_df.csv")
-    test_df = load_csv("recipes_df_test_bis.csv")
-    meal_test_df = load_csv("recipes_df_test.csv")
+    train_df = load_csv(str(RECIPE_DATA_PATH))
+    test_df = load_csv(str(RECIPE_DATA_PATH.with_name("recipes_df_test_bis.csv")))
+    meal_test_df = load_csv(str(RECIPE_DATA_PATH.with_name("recipes_df_test.csv")))
 
     X_train_all = embed_texts(embedder, train_df, "train")
     X_test_all = embed_texts(embedder, test_df, "test_bis")
@@ -280,7 +280,7 @@ def main():
         model_configs=model_configs(X_diff.shape[1], 2), augmentations=[None],
         metrics=metrics_cls, task_type="classification", device=DEVICE,
         epochs=150, batch_size=32, use_kfold=False, use_class_weights=True,
-        learning_rate=3e-4, path_start=TASKS["difficulty"]["path_start"], random_state=SEED,
+        learning_rate=3e-4, path_start=str(MODELS_DIR / TASKS["difficulty"]["path_start"]), random_state=SEED,
     ).run(X_diff, y_diff)
 
     t_mask = test_df["difficult"].notna().values
@@ -306,7 +306,7 @@ def main():
         metrics=metrics_cls, task_type="classification", device=DEVICE,
         epochs=600, batch_size=32, early_stopping=40, use_kfold=False,
         use_class_weights=True, learning_rate=2e-4, weight_decay=1e-4,
-        path_start=TASKS["meal_type"]["path_start"], random_state=SEED,
+        path_start=str(MODELS_DIR / TASKS["meal_type"]["path_start"]), random_state=SEED,
     ).run(X_meal, y_meal)
 
     meal_test = meal_test_df.reset_index()
@@ -330,7 +330,7 @@ def main():
         metrics=metrics_cls, task_type="classification", device=DEVICE,
         epochs=150, batch_size=32, use_kfold=False, use_class_weights=True,
         learning_rate=1e-4, weight_decay=5e-4,
-        path_start=TASKS["time_class"]["path_start"], random_state=SEED,
+        path_start=str(MODELS_DIR / TASKS["time_class"]["path_start"]), random_state=SEED,
     ).run(X_time, y_time)
 
     tt_test = test_df["times"].apply(_parse_total_time)
@@ -358,7 +358,7 @@ def main():
         ],
         augmentations=[None], metrics=metrics_reg, task_type="regression",
         device=DEVICE, epochs=150, batch_size=32, use_kfold=False,
-        use_class_weights=False, path_start=TASKS["nutrients"]["path_start"],
+        use_class_weights=False, path_start=str(MODELS_DIR / TASKS["nutrients"]["path_start"]),
         random_state=SEED,
     ).run(X_nut, y_nut)
 
@@ -367,7 +367,7 @@ def main():
     for m in ("lightgbm", "catboost", "stacking"):
         nut_model = load_model_by_name(
             MODEL_REGISTRY[f"{m}_regressor"], m, {},
-            path_start=TASKS["nutrients"]["path_start"], task_type="regression",
+            path_start=str(MODELS_DIR / TASKS["nutrients"]["path_start"]), task_type="regression",
         )
         preds = np.asarray(nut_model.predict(X_test_all[te_mask]))
         test_metrics["nutrients"][m] = {
@@ -379,7 +379,7 @@ def main():
         }
 
     # Primary nutrients model: fine-tuned bge-base regression head on raw text
-    ft_dir = ML_PIPELINE_DIR / "results" / NUTRIENTS_FINETUNE_DIR
+    ft_dir = MODELS_DIR / NUTRIENTS_FINETUNE_DIR
     tr_texts = train_df["recipe_text"].fillna("").values[tr_mask]
     te_texts = test_df["recipe_text"].fillna("").values[te_mask]
     print(f"\n[nutrients] fine-tuning {LOCAL_EMBEDDING_MODEL} regression head...")
@@ -416,7 +416,7 @@ def main():
         "seed": SEED,
         "test_metrics": test_metrics,
     }
-    meta_path = ML_PIPELINE_DIR / "results" / "recipe_models_meta.json"
+    meta_path = MODELS_DIR / "recipe_models_meta.json"
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
     print(f"\nWrote {meta_path}")

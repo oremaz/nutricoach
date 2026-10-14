@@ -16,6 +16,17 @@ MAE is computed on successful predictions; consult JSON for failures, missing di
 normalized MAE, RMSE, R2, dish-bootstrap confidence intervals and paired comparisons for all five targets.
 Oracle-mass errors are post-hoc diagnostics using reference masses, never deployable RGB-only scores.
 
+## Preliminary guided-prompt comparison
+
+The guided prompt was piloted on a planned 50-dish subset; 47 dishes currently have valid paired predictions.
+Its calorie and fat errors are similar to the one-shot baseline, while its mass error is lower. This is a
+small preliminary comparison, not the completed 500-dish evaluation.
+
+| Method (same 47 dishes) | Calories MAE (kcal) | Mass MAE (g) | Fat MAE (g) |
+|---|---:|---:|---:|
+| vlm_single | 109.6 | 85.6 | 6.8 |
+| vlm_single_guided | 111.0 | 78.4 | 7.1 |
+
 Configurations and original model IDs are preserved in the JSON. Published paper scores are not local measurements.
 
 The FoodLMM 4-bit variant quantizes decoder linear weights with Quanto qint4;

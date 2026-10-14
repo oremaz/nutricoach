@@ -45,7 +45,8 @@ def test_report_includes_paper_runs_and_rejects_mismatched_manifest(tmp_path):
     write_json(manifest_path, manifest)
     run = tmp_path / "run"
     from shared.config import OPENROUTER_MODEL_ID
-    write_json(run / "configuration.json", {"manifest_sha256": digest(manifest_path), "model": OPENROUTER_MODEL_ID})
+    write_json(run / "configuration.json", {"manifest_sha256": digest(manifest_path), "model": OPENROUTER_MODEL_ID,
+        "provider": "openrouter", "method_reasoning_effort": {"vlm_single": "none"}})
     write_json(run / "vlm_single.json", {"a": {
         "dish_id": "a", "prediction": manifest["references"]["a"] | {"calories": 150}, "inference_seconds": 1}})
     write_json(run / "foodlmm.json", {"a": {
@@ -61,13 +62,23 @@ def test_report_includes_paper_runs_and_rejects_mismatched_manifest(tmp_path):
     write_json(cached / "configuration.json", {"manifest_sha256": digest(manifest_path), "generation_use_cache": True})
     write_json(cached / "foodlmm.json", {"a": {
         "dish_id": "a", "prediction": manifest["references"]["a"] | {"calories": 105}, "inference_seconds": 1}})
-    report = build_report(manifest_path, [run, cached, quantized])
+    guided = tmp_path / "guided"
+    write_json(guided / "configuration.json", {"manifest_sha256": digest(manifest_path),
+        "model": OPENROUTER_MODEL_ID, "provider": "openrouter",
+        "method_reasoning_effort": {"vlm_single_guided": "high"}})
+    write_json(guided / "vlm_single_guided.json", {"a": {
+        "dish_id": "a", "prediction": manifest["references"]["a"] | {"calories": 125}, "inference_seconds": 1}})
+    report = build_report(manifest_path, [run, cached, quantized, guided])
     assert report["summary"]["methods"]["foodlmm"]["successful"] == 1
     markdown = markdown_report(report)
     assert "Successes /" not in markdown
     assert "| FoodLMM (16-bit) | 0.0" in markdown
     assert "| FoodLMM (4-bit decoder) | 10.0" in markdown
     assert "| FoodLMM (16-bit, cached) | 5.0" in markdown
+    assert "| vlm_single_guided | 25.0" in markdown
+    assert "`vlm_single_guided` provider: `openrouter`; model:" in markdown
+    assert "reasoning effort: `high`" in markdown
+    assert "does not isolate the prompt effect alone" in markdown
     assert "| foodlmm | 1 | -50.0 | [-50.0, -50.0] |" in markdown
     assert "| calories | 1 | 5.00 | [5.00, 5.00] |" in markdown
     assert "| foodlmm_4bit | cuda | 2.00 | 5.00 | 6.00 | 7.00 | 8.00 |" in markdown
@@ -209,6 +220,38 @@ def test_request_limiter_is_shared_by_trackers(monkeypatch):
         tracker.before_request(None)
     assert len(calls) == 3
     assert [tracker.http_requests for tracker in trackers] == [1, 1, 1]
+
+
+def test_guided_run_forces_high_reasoning_and_records_setting(tmp_path, monkeypatch):
+    from nutricoach.food_vision.evaluate_nutrition5k import APITracker
+
+    dish = "dish_1"
+    manifest = {"seed": 42, "dish_ids": [dish], "references": {
+        dish: dict.fromkeys(("calories", "mass_g", "protein_g", "carbs_g", "fat_g"), 100)}}
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "manifest.json").write_text(json.dumps(manifest))
+    observed_efforts = []
+
+    class Analyzer:
+        def __init__(self, reasoning_effort, **kwargs):
+            self.reasoning_effort = reasoning_effort
+
+        def analyze(self, image):
+            assert self.reasoning_effort == "high"
+            return FoodAnalysisResult(method="vlm_single_guided", food_items=[FoodItem("rice", 100, calories=130)])
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.setattr(APITracker, "client", lambda tracker, key: observed_efforts.append(tracker.reasoning_effort) or object())
+    monkeypatch.setattr("nutricoach.food_vision.evaluate_nutrition5k.get_available_methods",
+                        lambda: {"vlm_single_guided": Analyzer})
+    args = SimpleNamespace(workers=1, methods=["vlm_single_guided"], provider="openrouter", data_dir=data_dir,
+        output_dir=tmp_path / "guided-results", model="test/vision", max_output_tokens=8192,
+        reasoning_effort="none", request_interval=0, retry_errors=False, seed=42)
+    run_evaluation(args, manifest)
+    configuration = json.loads((args.output_dir / "configuration.json").read_text())
+    assert observed_efforts == ["high"]
+    assert configuration["method_reasoning_effort"]["vlm_single_guided"] == "high"
 
 
 @pytest.mark.parametrize("filename", ["nutrition5k_test50_results.json", "nutrition5k_test50_high_results.json"])

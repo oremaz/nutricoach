@@ -135,16 +135,18 @@ def test_upload_analysis_is_not_repeated_by_editing_and_new_photo_clears_draft(o
     photo = SimpleNamespace(name="meal.jpg", getvalue=lambda: b"first photo")
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: photo)
     monkeypatch.setattr(app.st, "image", lambda *args, **kwargs: None)
-    original["method"] = "foodlmm_4bit"
+    original["method"] = "vlm_single_guided"
     invoke = MagicMock(return_value=original)
     monkeypatch.setattr(app, "analyze_food_image", SimpleNamespace(invoke=invoke))
     at = AppTest.from_string(
         'from nutricoach import app\napp.initialize_session_state()\napp.display_food_analysis()', default_timeout=15
     ).run()
     assert not at.exception
+    assert at.toggle[0].value is True
     at.button[0].click().run()
     assert not at.exception
     assert invoke.call_count == 1
+    assert invoke.call_args.args[0]["guided_prompt"] is True
     assert not list(tmp_path.glob("*.jpg"))
     at.run()
     assert invoke.call_count == 1

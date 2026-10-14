@@ -13,13 +13,13 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from shared.config import SECRETS_DIR
+from shared.config import RECIPE_DATA_PATH, SECRETS_DIR
 
 
 EMBEDDING_MODEL_ID = "LiquidAI/LFM2.5-Embedding-350M"
 EMBEDDING_MODEL_REVISION = "f35ae2c91d687658dbf1f2b449382f0b019b9808"
 CACHE_VERSION = "4"
-DATA_PATH = Path(__file__).resolve().parents[2] / "ml_pipeline" / "recipes_df.csv"
+DATA_PATH = RECIPE_DATA_PATH
 CACHE_DIR = SECRETS_DIR / "recipe_lab_cache"
 MEAL_TYPES = {"Breakfast recipes": "breakfast", "Lunch recipes": "lunch/dinner", "Dinner recipes": "lunch/dinner"}
 TIME_LABELS = ("<15 min", "15-30 min", "30-60 min", ">60 min")

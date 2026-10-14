@@ -4,11 +4,10 @@ ML-powered recipe analysis using local classifiers and OpenRouter.
 Embeddings are computed locally with a sentence-transformers model (GPU when
 available) so that training and inference share the exact same text encoder.
 The trained checkpoints and their embedding/label metadata live in
-ml_pipeline/results/ (see ml_pipeline/train_recipe_models.py).
+results/ (see nut_agent/train_recipe_models.py).
 """
 
 import os
-import sys
 import json
 import logging
 import numpy as np
@@ -22,18 +21,14 @@ from recipe_lab.local_models import (
     _adapt_lfm_shortconv,
     load_or_train_models,
 )
-from shared.config import OPENROUTER_MODEL_ID, OPENROUTER_REASONING_EFFORT, OPENROUTER_MAX_OUTPUT_TOKENS, openrouter_reasoning
+from shared.config import MODELS_DIR, OPENROUTER_MODEL_ID, OPENROUTER_REASONING_EFFORT, OPENROUTER_MAX_OUTPUT_TOKENS, openrouter_reasoning
 
-REPO_ROOT = Path(__file__).parent.parent.parent
-sys.path.append(str(REPO_ROOT))
-sys.path.append(str(REPO_ROOT / "ml_pipeline"))
-
-from pipelines_torch.base import GeneralPipelineSklearn
-from utils.utils import load_model_by_name
+from ml_pipeline.pipelines_torch.base import GeneralPipelineSklearn
+from ml_pipeline.utils.utils import load_model_by_name
 
 logger = logging.getLogger(__name__)
 
-# Must match ml_pipeline/train_recipe_models.py; recipe_models_meta.json
+# Must match nut_agent/train_recipe_models.py; recipe_models_meta.json
 # written at training time is the source of truth.
 LOCAL_EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 EMBEDDING_DIM = 768
@@ -121,7 +116,7 @@ class FoodModelPredictor:
     def __init__(self, models_path: str = None, api_key: str = None, device: Optional[str] = None,
                  model_id: str = OPENROUTER_MODEL_ID, reasoning_effort: str = OPENROUTER_REASONING_EFFORT):
         if models_path is None:
-            models_path = REPO_ROOT / "ml_pipeline" / "results"
+            models_path = MODELS_DIR
         self.models_path = Path(models_path)
 
         self.meta = self._load_meta()
@@ -179,7 +174,7 @@ class FoodModelPredictor:
     @staticmethod
     def _registry_class(model_name: str, task_type: str):
         """Resolve the wrapper class for a checkpoint's model family."""
-        from pipelines_torch.models import MODEL_REGISTRY
+        from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
         suffix = "classifier" if task_type == "classification" else "regressor"
         key = f"{model_name}_{suffix}"
         return MODEL_REGISTRY.get(key, MODEL_REGISTRY[f"lightgbm_{suffix}"])

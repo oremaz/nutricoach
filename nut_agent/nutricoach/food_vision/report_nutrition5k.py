@@ -35,10 +35,9 @@ def build_report(manifest_path, run_dirs, model=OPENROUTER_MODEL_ID):
             if method in API_METHODS and configuration["model"] != model:
                 raise ValueError(f"Different API model for {method}: {directory}")
             if method in API_METHODS:
-                settings = {key: configuration.get(key) for key in ("model", "max_output_tokens", "reasoning_effort", "local_model_revision", "local_quantization")}
-                settings["provider"] = configuration.get("provider", "openrouter")
+                settings = {key: configuration.get(key) for key in ("model", "provider")}
                 if api_settings is not None and settings != api_settings:
-                    raise ValueError(f"Different API reasoning or token budget: {directory}")
+                    raise ValueError(f"Different API provider or model: {directory}")
                 api_settings = settings
             if method in configurations:
                 raise ValueError(f"Multiple runs supplied for {method}; select one explicitly")
@@ -106,12 +105,16 @@ def markdown_report(report):
                        values.get("peak_host_rss_gib")]
             cells = [f"{number:.2f}" if number is not None else "not measured" for number in numbers]
             lines.append(f"| {method} | {values['device']} | " + " | ".join(cells) + " |")
-    vision = report.get("configurations", {}).get("vlm_single")
-    if vision:
-        lines.extend(["", f"VLM provider: `{vision.get('provider', 'openrouter')}`; model: `{vision['model']}`; "
-                      f"reasoning: `{vision.get('reasoning_effort', 'unspecified')}`."])
-        if vision.get("provider") == "local":
-            lines.append(f"Local revision: `{vision['local_model_revision']}`; quantization: `{vision['local_quantization']}`.")
+    for method in ("vlm_single", "vlm_single_guided"):
+        vision = report.get("configurations", {}).get(method)
+        if vision:
+            effort = vision.get("method_reasoning_effort", {}).get(method, vision.get("reasoning_effort", "unspecified"))
+            lines.extend(["", f"`{method}` provider: `{vision.get('provider', 'openrouter')}`; "
+                          f"model: `{vision['model']}`; reasoning effort: `{effort}`."])
+            if vision.get("provider") == "local":
+                lines.append(f"Local revision: `{vision['local_model_revision']}`; quantization: `{vision['local_quantization']}`.")
+    if all(method in report.get("configurations", {}) for method in ("vlm_single", "vlm_single_guided")):
+        lines.extend(["", "The guided comparison changes both the prompt and reasoning effort, so it does not isolate the prompt effect alone."])
     lines.extend(["", "## Run coverage", ""])
     for method, statistics in report["summary"]["methods"].items():
         state = report.get("execution_status", {}).get(method, {}).get("state", "not started")

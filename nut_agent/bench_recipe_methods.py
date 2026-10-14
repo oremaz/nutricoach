@@ -6,12 +6,12 @@ LiquidAI/LFM2.5-Embedding-350M across classifiers (logistic probe, kNN,
 LightGBM, XGBoost, CatBoost, stacking, MLP, and fine-tuned bge-base) on
 difficulty, meal type (binary and 3-class), and total-time class.
 
-Writes results to ml_pipeline/results/bench_recipe_methods.json and prints
+Writes results to results/bench_recipe_methods.json and prints
 markdown tables. Deployment training stays in train_recipe_models.py.
 
 Run:
-    CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. uv run python ml_pipeline/bench_recipe_methods.py
-    CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. uv run python ml_pipeline/bench_recipe_methods.py \
+    CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. uv run python nut_agent/bench_recipe_methods.py
+    CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. uv run python nut_agent/bench_recipe_methods.py \
         --embedding-models BAAI/bge-large-en-v1.5 LiquidAI/LFM2.5-Embedding-350M
 """
 
@@ -26,10 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
-ML_PIPELINE_DIR = Path(__file__).parent
-os.chdir(ML_PIPELINE_DIR)
-sys.path.insert(0, str(ML_PIPELINE_DIR))
-sys.path.insert(0, str(ML_PIPELINE_DIR.parent / "nut_agent"))
+APP_DIR = Path(__file__).parent
+sys.path.insert(0, str(APP_DIR))
 
 import torch
 from sklearn.linear_model import LogisticRegression
@@ -38,7 +36,9 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_sco
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 
-from utils.data import load_csv, filter_meal_types
+from ml_pipeline.utils.data import load_csv, filter_meal_types
+
+from shared.config import MODELS_DIR, RECIPE_DATA_PATH
 
 from recipe_lab.predictor import LocalEmbedder
 
@@ -58,7 +58,7 @@ DEFAULT_MODEL_KEYS = {
     "LiquidAI/LFM2.5-Embedding-350M": "lfm2_5",
 }
 
-RESULTS_PATH = ML_PIPELINE_DIR / "results" / "bench_recipe_methods.json"
+RESULTS_PATH = MODELS_DIR / "bench_recipe_methods.json"
 
 
 def model_key(model_name):
@@ -129,9 +129,9 @@ def time_bin(t):
 
 def build_datasets():
     """Return dict of task -> (train_idx, y_train, test_split, test_idx, y_test, labels)."""
-    train_df = load_csv("recipes_df.csv")
-    test_df = load_csv("recipes_df_test_bis.csv")
-    meal_test_df = load_csv("recipes_df_test.csv")
+    train_df = load_csv(str(RECIPE_DATA_PATH))
+    test_df = load_csv(str(RECIPE_DATA_PATH.with_name("recipes_df_test_bis.csv")))
+    meal_test_df = load_csv(str(RECIPE_DATA_PATH.with_name("recipes_df_test.csv")))
 
     tasks = {}
 
@@ -185,11 +185,11 @@ def build_datasets():
 
 
 def embed_split(backend, model_name, df, split):
-    cache = ML_PIPELINE_DIR / "results" / f"_emb_cache_{backend}_{split}.npy"
+    cache = MODELS_DIR / f"_emb_cache_{backend}_{split}.npy"
     # bge caches from train_recipe_models.py keep their original names
     legacy = {"train": "train", "test_bis": "test_bis", "test": "test"}
     if backend == "bge":
-        old = ML_PIPELINE_DIR / "results" / f"_emb_cache_{legacy[split]}.npy"
+        old = MODELS_DIR / f"_emb_cache_{legacy[split]}.npy"
         if old.exists() and not cache.exists():
             cache = old
     texts = df["recipe_text"].fillna("").tolist()
@@ -211,7 +211,7 @@ def make_classifiers(seed=SEED):
     import xgboost as xgb
     from catboost import CatBoostClassifier
 
-    from pipelines_torch.models import StackingEnsembleClassifierWrapper
+    from ml_pipeline.pipelines_torch.models import StackingEnsembleClassifierWrapper
 
     return {
         "logreg": GridSearchCV(

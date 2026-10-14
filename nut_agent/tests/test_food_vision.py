@@ -12,7 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nutricoach.food_vision.vlm_analyzer import VLMAnalyzerSingleShot
+from nutricoach.food_vision.vlm_analyzer import VLMAnalyzerSingleShot, VLMAnalyzerSingleShotGuided
+from nutricoach.food_vision.base import FoodAnalysisResult, FoodItem
 from nutricoach.food_vision.compare import get_available_methods, run_comparison
 from nutricoach.tools import analyze_food_image
 
@@ -50,6 +51,40 @@ def test_single_shot_makes_one_image_call(tmp_path, effort):
     assert "vlm_chain" not in get_available_methods()
 
 
+def test_guided_single_shot_uses_five_shot_system_prompt_and_local_highest_effort(tmp_path):
+    from shared.llm_provider import request_settings
+
+    image = tmp_path / "meal.jpg"
+    image.write_bytes(b"image")
+    analyzer = VLMAnalyzerSingleShotGuided(provider="local", model="Qwen/Qwen3.8-27B")
+    client = MagicMock()
+    client.chat.completions.create.return_value.choices = [SimpleNamespace(
+        message=SimpleNamespace(content=json.dumps({"items": [{
+            "name": "rice", "quantity_grams": 180, "calories": 234,
+            "protein_g": 4.9, "carbs_g": 50.8, "fat_g": 0.5,
+        }]}))
+    )]
+    analyzer._client = client
+    result = analyzer.analyze(str(image))
+    messages = client.chat.completions.create.call_args.kwargs["messages"]
+    assert result.method == "vlm_single_guided"
+    assert messages[0]["role"] == "system"
+    assert sum(f"Example {number}:" in messages[0]["content"] for number in range(1, 6)) == 5
+    assert messages[1]["content"][1]["type"] == "image_url"
+    assert client.chat.completions.create.call_args.kwargs["extra_body"] == request_settings("local", "xhigh")["extra_body"]
+    assert "vlm_single_guided" in get_available_methods()
+
+
+def test_comparison_passes_selected_model_to_guided(monkeypatch):
+    analyzer = MagicMock()
+    analyzer.analyze.return_value = MagicMock(error=None, food_items=[], total_calories=0)
+    method = MagicMock(return_value=analyzer)
+    monkeypatch.setattr("nutricoach.food_vision.compare.get_available_methods",
+                        lambda: {"vlm_single_guided": method})
+    run_comparison("meal.jpg", methods=["vlm_single_guided"], model_id="test/vision", reasoning_effort="low")
+    method.assert_called_once_with(model="test/vision", reasoning_effort="low")
+
+
 def test_foodlmm_default_agent_dispatch(tmp_path, monkeypatch):
     image = tmp_path / "meal.jpg"
     image.write_bytes(b"image")
@@ -66,7 +101,38 @@ def test_foodlmm_default_agent_dispatch(tmp_path, monkeypatch):
     analyzer.analyze.assert_called_once_with(str(image))
     assert result["method"] == "foodlmm_4bit"
     assert result["total_calories"] == 260
-    assert set(analyze_food_image.tool_call_schema.model_fields) == {"image_path", "log_meal", "method"}
+    assert set(analyze_food_image.tool_call_schema.model_fields) == {
+        "image_path", "log_meal", "method", "guided_prompt"}
+
+
+@pytest.mark.parametrize("guided", [True, False])
+@pytest.mark.parametrize("provider,effort", [("openrouter", "high"), ("groq", "high"), ("local", "xhigh")])
+def test_photo_vlm_uses_sidebar_model_and_forces_high_reasoning(tmp_path, monkeypatch, guided, provider, effort):
+    image = tmp_path / "meal.png"
+    image.write_bytes(b"image")
+    captured = {}
+
+    class Analyzer:
+        method_name = "vlm_single_guided" if guided else "vlm_single"
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def analyze(self, path):
+            return FoodAnalysisResult(method=self.method_name, food_items=[FoodItem("rice", 100, calories=130)])
+
+    monkeypatch.setattr("nutricoach.food_vision.vlm_analyzer.VLMAnalyzerSingleShot", Analyzer)
+    monkeypatch.setattr("nutricoach.food_vision.vlm_analyzer.VLMAnalyzerSingleShotGuided", Analyzer)
+    result = analyze_food_image.invoke({"image_path": str(image), "method": "vlm_single",
+                                        "guided_prompt": guided}, config={"configurable": {
+        "llm_provider": provider, "chat_model_id": "sidebar/model", "openrouter_api_key": "or-key",
+        "groq_api_key": "groq-key", "reasoning_effort": "none", "local_device": "cuda:0",
+        "local_quantization": "4bit"}})
+    assert result.get("method") == Analyzer.method_name, result
+    assert captured["provider"] == provider
+    assert captured["model"] == "sidebar/model"
+    assert captured["reasoning_effort"] == effort
+    assert captured["api_key"] == {"openrouter": "or-key", "groq": "groq-key", "local": None}[provider]
 
 
 def test_dpf_loads_once_and_applies_exif_orientation(tmp_path, monkeypatch):
@@ -103,7 +169,10 @@ def test_photo_ui_offers_foodlmm_and_dpf():
         "from nutricoach import app\napp.initialize_session_state()\napp.display_food_analysis()"
     ).run(timeout=15)
     assert not at.exception
-    assert at.selectbox[0].options == ["FoodLMM (4-bit)", "DPF (reproduction)"]
+    assert at.selectbox[0].options == ["One-shot VLM", "FoodLMM (4-bit)", "DPF (reproduction)"]
+    assert at.toggle(key="food_vision_guided_prompt").value is True
+    at.selectbox[0].set_value("foodlmm_4bit").run(timeout=15)
+    assert not at.exception
     assert any("FoodLMM (4-bit)" in item.value for item in at.caption)
     assert not at.text_input
 
@@ -311,7 +380,7 @@ def test_dpf_checkpoint_replaces_initialization_and_rejects_missing_weights(monk
     monkeypatch.setitem(sys.modules, "nutrition5k_pkg.data.transforms", SimpleNamespace(
         get_dpf_rgb_transform=lambda: None, get_dpf_depth_transform=lambda: None))
     monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *args, **kwargs: "checkpoint.pt")
-    monkeypatch.setattr("transformers.pipeline", MagicMock())
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(pipeline=MagicMock()))
     weights = {name + ".weight": torch.full((2, 2), float(index + 1))
                for index, name in enumerate(("rgb_stream", "depth_stream", "heads"))}
     if not complete:

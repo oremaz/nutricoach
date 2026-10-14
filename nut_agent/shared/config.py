@@ -2,12 +2,13 @@
 Configuration file for the nutritionist agent.
 """
 
+import os
 from pathlib import Path
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent
-ML_PIPELINE_DIR = BASE_DIR.parent / "ml_pipeline"
-MODELS_DIR = ML_PIPELINE_DIR / "results"
+MODELS_DIR = Path(os.environ.get("NUTRICOACH_MODELS_DIR", BASE_DIR.parent / "results")).expanduser().resolve()
+RECIPE_DATA_PATH = Path(os.environ.get("NUTRICOACH_RECIPE_DATA", BASE_DIR / "recipes_df.csv")).expanduser().resolve()
 SECRETS_DIR = BASE_DIR / "secrets"
 
 # Model configurations

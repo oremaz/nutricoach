@@ -19,14 +19,17 @@ def test_default_and_invalid_effort():
         openrouter_reasoning("invalid")
 
 
-def test_recipe_selector_and_cached_predictor(monkeypatch):
+def test_recipe_uses_shared_reasoning_and_cached_predictor(monkeypatch):
     from recipe_lab import app
 
-    at = AppTest.from_string("from recipe_lab.app import main\nmain()").run()
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    at = AppTest.from_string(
+        'import streamlit as st\n'
+        'st.session_state["reasoning_effort"] = "low"\n'
+        'from recipe_lab.app import main\nmain()'
+    ).run()
     assert not at.exception
-    assert at.selectbox(key="reasoning_effort").value == "high"
-    at.selectbox(key="reasoning_effort").set_value("low").run()
-    assert not at.exception
+    assert not at.selectbox
     assert at.session_state["reasoning_effort"] == "low"
     predictor = MagicMock(api_key="test", model_id="test/model", reasoning_effort="high")
     state = {"api_key": "test", "model_id": "test/model", "reasoning_effort": "low", "food_predictor": predictor}

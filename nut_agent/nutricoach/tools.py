@@ -379,14 +379,16 @@ def analyze_food_image(
     config: RunnableConfig,
     log_meal: bool = False,
     method: Optional[str] = None,
+    guided_prompt: bool = True,
 ) -> Dict[str, Any]:
     """
-    Analyze a food photo locally with FoodLMM 4-bit or DPF to estimate whole-dish mass, calories and macros.
+    Analyze a food photo with the selected vision method to estimate meal mass, calories and macros.
 
     Args:
         image_path: Path to the food image file
         log_meal: Save the estimated meal to today's log only when the user asks to log it
-        method: foodlmm_4bit (default) or dpf_reproduction
+        method: foodlmm_4bit, dpf_reproduction or vlm_single
+        guided_prompt: Use the portion-first prompt for vlm_single
 
     Returns:
         Dictionary with detected food items and nutritional breakdown
@@ -397,12 +399,25 @@ def analyze_food_image(
         return {"error": f"Image not found: {image_path}"}
 
     try:
-        if method not in (None, "foodlmm_4bit", "dpf_reproduction"):
+        if method == "vlm_single":
+            from nutricoach.food_vision.vlm_analyzer import VLMAnalyzerSingleShot, VLMAnalyzerSingleShotGuided
+            settings = config.get("configurable", {})
+            provider = settings.get("llm_provider", "openrouter")
+            analyzer_class = VLMAnalyzerSingleShotGuided if guided_prompt else VLMAnalyzerSingleShot
+            analyzer = analyzer_class(
+                provider=provider,
+                api_key=settings.get(f"{provider}_api_key"),
+                model=settings.get("chat_model_id"),
+                reasoning_effort="xhigh" if provider == "local" else "high",
+                device=settings.get("local_device"),
+                quantization=settings.get("local_quantization", "none"),
+            )
+        elif method not in (None, "foodlmm_4bit", "dpf_reproduction"):
             raise ValueError(f"Unknown food photo method: {method}")
-        if method == "dpf_reproduction":
+        elif method == "dpf_reproduction":
             from nutricoach.food_vision.dpf_analyzer import get_dpf_analyzer
             analyzer = get_dpf_analyzer()
-        else:
+        elif method in (None, "foodlmm_4bit"):
             from nutricoach.food_vision.foodlmm_analyzer import get_foodlmm_analyzer
             analyzer = get_foodlmm_analyzer()
         result = analyzer.analyze(image_path)

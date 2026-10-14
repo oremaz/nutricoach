@@ -28,8 +28,8 @@ from nutricoach.food_vision.supervised_analyzers import TARGETS, RGB_CHECKPOINT,
 
 BASE_URL = "https://storage.googleapis.com/nutrition5k_dataset/nutrition5k_dataset/"
 FOOD_VISION_DIR = Path(__file__).parent
-METHODS = ("vlm_single", "rgb_regression", "food_r1")
-API_METHODS = {"vlm_single"}
+METHODS = ("vlm_single", "vlm_single_guided", "rgb_regression", "food_r1")
+API_METHODS = {"vlm_single", "vlm_single_guided"}
 
 
 def digest(path):
@@ -183,6 +183,7 @@ class APITracker:
                                "finish_reason": completion.choices[0].finish_reason,
                                "usage": completion.usage.model_dump() if completion.usage else None})
             return completion
+
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
 
@@ -311,6 +312,9 @@ def run_evaluation(args, manifest):
                      local_generation={"do_sample": False, "max_image_side": 1024} if provider == "local" else None,
                      provider_code_sha256={name: digest(FOOD_VISION_DIR.parents[1] / "shared" / name)
                                            for name in ("llm_provider.py", "local_qwen.py")})
+    signature["method_reasoning_effort"] = {
+        method: ("xhigh" if provider == "local" else "high") if method == "vlm_single_guided"
+        else args.reasoning_effort for method in args.methods if method in API_METHODS}
     signature_path = args.output_dir / "configuration.json"
     if signature_path.exists() and json.loads(signature_path.read_text()) != signature:
         raise ValueError("Output configuration differs; use another output directory")
@@ -337,7 +341,8 @@ def run_evaluation(args, manifest):
             initialization_seconds = 0.0
             if not hasattr(local, "analyzer"):
                 started = time.perf_counter()
-                local.tracker = APITracker(args.request_interval, args.max_output_tokens, args.reasoning_effort,
+                method_effort = signature["method_reasoning_effort"].get(method, args.reasoning_effort)
+                local.tracker = APITracker(args.request_interval, args.max_output_tokens, method_effort,
                                            limiter=limiter, provider=provider,
                                            client_options={"model": args.model, "device": getattr(args, "device", None),
                                                            "quantization": getattr(args, "local_quantization", "none")})

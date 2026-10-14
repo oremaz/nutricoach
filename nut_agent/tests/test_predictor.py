@@ -183,20 +183,20 @@ class TestModelFamilyRegistry:
     @pytest.fixture(autouse=True)
     def requires_model_registry(self):
         try:
-            from pipelines_torch.models import MODEL_REGISTRY
+            from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
         except Exception as exc:
             pytest.skip(f"model registry unavailable in this environment: {exc}")
         return MODEL_REGISTRY
 
     def test_new_families_registered(self):
-        from pipelines_torch.models import MODEL_REGISTRY
+        from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
 
         for key in ("catboost_classifier", "catboost_regressor",
                     "stacking_classifier", "stacking_regressor"):
             assert key in MODEL_REGISTRY
 
     def test_registry_class_resolution(self):
-        from pipelines_torch.models import MODEL_REGISTRY
+        from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
 
         for name in ("lightgbm", "xgboost", "catboost", "stacking"):
             cls = FoodModelPredictor._registry_class(name, "classification")
@@ -208,7 +208,7 @@ class TestModelFamilyRegistry:
         assert cls is MODEL_REGISTRY["lightgbm_classifier"]
 
     def test_catboost_wrappers_fit_predict(self):
-        from pipelines_torch.models import MODEL_REGISTRY
+        from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
 
         rng = np.random.default_rng(0)
         X = rng.normal(size=(80, 8)).astype(np.float32)
@@ -227,7 +227,7 @@ class TestModelFamilyRegistry:
         assert tuple(preds.shape) == (5, 2)
 
     def test_stacking_wrappers_fit_predict(self):
-        from pipelines_torch.models import MODEL_REGISTRY
+        from ml_pipeline.pipelines_torch.models import MODEL_REGISTRY
 
         rng = np.random.default_rng(1)
         X = rng.normal(size=(80, 8)).astype(np.float32)

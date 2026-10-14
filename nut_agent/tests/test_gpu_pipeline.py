@@ -20,7 +20,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import torch
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-RESULTS_DIR = REPO_ROOT / "ml_pipeline" / "results"
+from shared.config import MODELS_DIR
+
+RESULTS_DIR = MODELS_DIR
 META_PATH = RESULTS_DIR / "recipe_models_meta.json"
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

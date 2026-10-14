@@ -16,6 +16,7 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUNBUFFERED=1
+export HF_HOME="${SLURM_SUBMIT_DIR}/nut_agent/nutricoach/food_vision/data/huggingface"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 unset OPENROUTER_API_KEY GROQ_API_KEY

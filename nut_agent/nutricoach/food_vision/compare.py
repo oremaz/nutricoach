@@ -27,10 +27,11 @@ logger = logging.getLogger(__name__)
 
 def get_available_methods() -> Dict[str, type]:
     """Return all available analyzer classes keyed by method name."""
-    from .vlm_analyzer import VLMAnalyzerSingleShot
+    from .vlm_analyzer import VLMAnalyzerSingleShot, VLMAnalyzerSingleShotGuided
     from .supervised_analyzers import RGBRegressionAnalyzer, FoodR1Analyzer
 
     methods = {"vlm_single": VLMAnalyzerSingleShot,
+               "vlm_single_guided": VLMAnalyzerSingleShotGuided,
                "rgb_regression": RGBRegressionAnalyzer, "food_r1": FoodR1Analyzer}
     return methods
 
@@ -74,7 +75,7 @@ def run_comparison(
         try:
             # Instantiate with appropriate kwargs
             kwargs = {}
-            if name == "vlm_single":
+            if name in ("vlm_single", "vlm_single_guided"):
                 kwargs["reasoning_effort"] = reasoning_effort
                 kwargs["model"] = model_id
                 if openrouter_api_key:
