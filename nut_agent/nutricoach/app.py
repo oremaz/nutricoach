@@ -1,22 +1,10 @@
-"""
-NutriCoach — Stateful AI nutritionist Streamlit app (v2).
-
-Changes from v1:
-- Uses LangGraph SqliteSaver for conversation persistence (replaced manual JSON)
-- Simplified agent state (no ghost fields)
-- Thread-based conversations via checkpointer config
-- Added food image analysis tab
-"""
+"""NutriCoach session lifecycle, provider settings and Streamlit page routing."""
 
 import sys
 import os
-import json
 import logging
 import uuid
-import tempfile
-import hashlib
 from pathlib import Path
-from datetime import date, datetime
 
 # On macOS, LightGBM must load before the agent's PyTorch dependencies.
 if sys.platform == "darwin":
@@ -30,24 +18,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
-import pandas as pd
 
 from langchain_core.messages import HumanMessage, AIMessage
 
-from shared.config import OPENROUTER_REASONING_EFFORT, SECRETS_DIR, STREAMLIT_CONFIG
-from shared.auth import (
-    authenticate_user,
-    register_user,
-    load_user_info,
-)
+from shared.config import OPENROUTER_REASONING_EFFORT, SECRETS_DIR
+from shared.auth import authenticate_user, load_user_info
 from shared.memory import MemoryManager
-from shared.schemas import DailyLog, MealEntry
-from nutricoach.agent import build_nutricoach_graph, create_initial_state
-from nutricoach.tools import analyze_food_image, save_photo_analysis
-from nutricoach.food_vision.nutrition_db import NutritionDB
-from nutricoach.food_vision.review import NUTRIENT_FIELDS, photo_edit_rows, apply_photo_edits
+from nutricoach import photo_ui, registration_ui, tracking_ui
+from nutricoach.tools import analyze_food_image
+from nutricoach.agent import build_nutricoach_graph
 from shared.llm_provider import PROVIDERS, REASONING_EFFORTS, default_model
 
 logger = logging.getLogger(__name__)
@@ -237,56 +216,7 @@ def init_agent():
 
 
 def display_nutrition_dashboard():
-    """Display a real dashboard from the user's daily logs."""
-    username = st.session_state.get("username")
-    if not username:
-        st.info("Log in to see your nutrition dashboard.")
-        return
-
-    memory = MemoryManager(username, SECRETS_DIR)
-    recent_logs = memory.load_recent_daily_logs(n=7)
-    targets = memory.load_nutrition_targets()
-
-    if not recent_logs:
-        st.info("No daily logs yet. Start tracking your meals to see trends here!")
-        return
-
-    rows = []
-    for log in reversed(recent_logs):
-        rows.append({
-            "Date": log.date,
-            "Calories": log.total_calories or 0,
-            "Protein (g)": log.total_protein_g or 0,
-            "Carbs (g)": log.total_carbs_g or 0,
-            "Fat (g)": log.total_fat_g or 0,
-            "Weight (kg)": log.weight_kg,
-            "Compliance": (log.compliance_score or 0) * 100,
-        })
-    df = pd.DataFrame(rows)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Daily Calories**")
-        fig = px.line(df, x="Date", y="Calories", markers=True)
-        if targets:
-            fig.add_hline(y=targets.target_calories, line_dash="dash", annotation_text="Target")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        if any(df["Weight (kg)"] > 0):
-            st.markdown("**Weight Trend**")
-            weight_df = df[df["Weight (kg)"] > 0]
-            fig = px.line(weight_df, x="Date", y="Weight (kg)", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            latest = rows[-1] if rows else {}
-            if latest.get("Protein (g)") or latest.get("Carbs (g)") or latest.get("Fat (g)"):
-                st.markdown("**Today's Macros**")
-                fig = go.Figure(data=[go.Pie(
-                    labels=["Protein", "Carbs", "Fat"],
-                    values=[latest["Protein (g)"], latest["Carbs (g)"], latest["Fat (g)"]],
-                )])
-                st.plotly_chart(fig, use_container_width=True)
+    tracking_ui.display_nutrition_dashboard()
 
 
 # --- Chat Interface ---
@@ -310,118 +240,16 @@ def display_chat_interface():
         send_message(user_input)
 
 
-# --- Food Image Analysis ---
-
-
 def _save_upload(uploaded) -> Path:
-    SECRETS_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = Path(uploaded.name).suffix.lower()
-    with tempfile.NamedTemporaryFile("wb", dir=SECRETS_DIR, suffix=suffix, delete=False) as f:
-        f.write(uploaded.getvalue())
-        return Path(f.name)
+    return photo_ui._save_upload(uploaded, SECRETS_DIR)
 
 
 def display_food_analysis():
-    """Tab for analyzing food photos."""
-    st.subheader("Analyze Food Photo")
-    st.markdown("Upload a photo of your meal to estimate its total mass, calories, and macros.")
-    method = st.selectbox("Analysis method", ["vlm_single", "foodlmm_4bit", "dpf_reproduction"],
-                          format_func=lambda value: {"vlm_single": "One-shot VLM",
-                                                     "foodlmm_4bit": "FoodLMM (4-bit)",
-                                                     "dpf_reproduction": "DPF (reproduction)"}[value],
-                          key="food_vision_method")
-    guided_prompt = st.toggle("Use guided nutrition prompt", value=True, key="food_vision_guided_prompt") \
-        if method == "vlm_single" else False
-    if method == "vlm_single":
-        st.caption("Uses the provider and model selected in the sidebar, always with high reasoning.")
-    elif method == "foodlmm_4bit":
-        st.caption("Runs locally, with no API key. Model files download on first use.")
-        st.caption("FoodLMM (4-bit) requires its separate environment. A prepared 4-bit checkpoint reduces loading memory.")
-    else:
-        st.caption("Runs locally, with no API key. Model files download on first use.")
-        st.caption("DPF estimates whole-dish nutrition using RGB and predicted depth.")
-
-    uploaded = st.file_uploader("Upload a food image", type=["jpg", "jpeg", "png", "webp"])
-    active_method = "vlm_single_guided" if method == "vlm_single" and guided_prompt else method
-    context = None
-    if uploaded:
-        context = (st.session_state.get("username"), active_method,
-                   hashlib.sha256(uploaded.getvalue()).hexdigest())
-        if method == "vlm_single":
-            context += (st.session_state.get("llm_provider"), st.session_state.get("chat_model_id"))
-    if st.session_state.get("photo_context") != context:
-        st.session_state["photo_context"] = context
-        st.session_state.pop("photo_result", None)
-        st.session_state["photo_logged"] = False
-    if not uploaded:
-        return
-    st.image(uploaded, caption="Your meal", use_container_width=True)
-    if st.button("Analyze photo"):
-        st.session_state.pop("photo_result", None)
-        tmp_path = _save_upload(uploaded)
-        try:
-            with st.spinner("Analyzing your meal..."):
-                result = analyze_food_image.invoke({"image_path": str(tmp_path), "method": method,
-                                                    "guided_prompt": guided_prompt}, config=_thread_config())
-            if result.get("error"):
-                st.error(result["error"])
-            elif result.get("method") != active_method:
-                st.error("The analysis returned a different method than selected. Please restart the app and analyze again.")
-            else:
-                st.session_state["photo_result"] = result
-                st.session_state["photo_review_id"] = uuid.uuid4().hex[:8]
-                st.session_state["photo_logged"] = False
-        finally:
-            tmp_path.unlink(missing_ok=True)
-    if st.session_state.get("photo_result"):
-        display_photo_review()
+    photo_ui.display_food_analysis(_thread_config, analyze_food_image, SECRETS_DIR)
 
 
 def display_photo_review():
-    original = st.session_state["photo_result"]
-    review_id = st.session_state["photo_review_id"]
-    logged = st.session_state.get("photo_logged", False)
-    st.markdown("**Review your meal**")
-    st.caption("Analysis method: " + {"vlm_single": "One-shot VLM", "vlm_single_guided": "One-shot VLM (guided)",
-                                      "foodlmm_4bit": "FoodLMM (4-bit)", "dpf_reproduction": "DPF (reproduction)"}
-               .get(original["method"], original["method"]))
-    meal_name = st.text_input("Meal name", value="Photo meal", key=f"photo_name_{review_id}", disabled=logged)
-    st.caption("Edit grams, add rows, or select rows to delete ingredients. When changing a food, choose its nutrition source. "
-               "Manual nutrient columns are per 100g; selecting a database food overrides those columns.")
-    try:
-        rows = st.session_state["photo_saved_rows"] if logged else photo_edit_rows(original)
-    except (ValueError, TypeError, KeyError) as exc:
-        st.error(str(exc))
-        return
-    sources = ["Photo estimate", "Manual", *[f"Database: {name}" for name in sorted(NutritionDB().db)]]
-    columns = {
-        "original_index": None,
-        "name": st.column_config.TextColumn("Food composition", required=True),
-        "quantity_grams": st.column_config.NumberColumn("Grams", min_value=0.01, required=True),
-        "nutrition_source": st.column_config.SelectboxColumn("Nutrition source", options=sources, required=True),
-        **{field: st.column_config.NumberColumn(f"{field.replace('_g', '')} / 100g", min_value=0.0)
-           for field in NUTRIENT_FIELDS},
-    }
-    edited = st.data_editor(pd.DataFrame(rows), num_rows="dynamic", hide_index=True,
-                            column_config=columns, disabled=True if logged else ["original_index"],
-                            key=f"photo_editor_{review_id}", use_container_width=True)
-    try:
-        corrected = apply_photo_edits(original, edited.to_dict("records"))
-    except (ValueError, TypeError, KeyError) as exc:
-        st.info(f"Complete your corrections: {exc}")
-        return
-    st.write(f"**{corrected.total_calories:.0f} kcal** · Protein: {corrected.total_protein_g:.1f}g · "
-             f"Carbs: {corrected.total_carbs_g:.1f}g · Fat: {corrected.total_fat_g:.1f}g")
-    if logged:
-        st.success("This meal has been saved to today's journal.")
-    elif st.button("Save reviewed meal to today's journal", key=f"photo_save_{review_id}"):
-        try:
-            save_photo_analysis(corrected, _thread_config(), meal_name=meal_name)
-            st.session_state["photo_saved_rows"] = edited.to_dict("records")
-            st.session_state["photo_logged"] = True
-            st.rerun()
-        except (ValueError, OSError) as exc:
-            st.error(f"Could not save meal: {exc}")
+    photo_ui.display_photo_review(_thread_config)
 
 
 # --- Quick Actions ---
@@ -456,69 +284,8 @@ def display_quick_actions():
                 send_message("Generate my weekly summary and tell me what to improve next week.")
 
 
-# --- Daily Results Tracker ---
-
-
 def display_daily_results():
-    with st.expander("Daily Results Tracking", expanded=False):
-        date_tracked = st.date_input("Meals date:", max_value=date.today())
-        record_weight = st.checkbox("I measured my weight")
-        current_weight = None
-        weight_date = None
-        if record_weight:
-            st.caption("Use the morning measurement, before breakfast. Date it on the morning it was measured, even when reviewing yesterday's meals.")
-            col1, col2 = st.columns(2)
-            with col1:
-                current_weight = st.number_input("Measured weight (kg):", min_value=30.0, max_value=200.0, value=None, step=0.1)
-            with col2:
-                weight_date = st.date_input("Weight measurement date:", max_value=date.today())
-
-        st.subheader("Meal Compliance")
-        meals = ["Breakfast", "Lunch", "Dinner", "Snacks"]
-        meal_data = {}
-        for meal in meals:
-            st.write(f"**{meal}:**")
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                followed = st.checkbox(f"Followed {meal.lower()} plan exactly", key=f"exact_{meal.lower()}")
-            with col2:
-                if not followed:
-                    diff = st.text_area(f"Differences for {meal.lower()}:", key=f"diff_{meal.lower()}", height=60)
-                else:
-                    diff = "Followed plan exactly"
-            meal_data[meal] = {"followed_exactly": followed, "differences": diff if not followed else "Followed plan exactly"}
-
-        additional_info = st.text_area("Additional information:", placeholder="Energy levels, cravings, exercise, water intake, sleep...", height=80)
-
-        if st.button("Submit Daily Results"):
-            if st.session_state["agent_graph"]:
-                if record_weight and current_weight is None:
-                    st.error("Enter the measured weight or uncheck 'I measured my weight'.")
-                    return
-                if record_weight:
-                    memory = MemoryManager(st.session_state["username"], SECRETS_DIR)
-                    weight_day = weight_date.isoformat()
-                    log = memory.load_daily_log(weight_day) or DailyLog(date=weight_day)
-                    log.weight_kg = current_weight
-                    memory.save_daily_log(log)
-                meal_lines = []
-                for meal, data in meal_data.items():
-                    if data["followed_exactly"]:
-                        meal_lines.append(f"- {meal}: Followed plan exactly")
-                    else:
-                        meal_lines.append(f"- {meal}: {data['differences']}")
-
-                message = f"""Please analyze my daily results:
-
-**Daily Tracking Results for {date_tracked}**
-**Morning weight:** {f'{current_weight} kg on {weight_date}' if record_weight else 'Not measured'}
-**Meal Compliance:**
-{chr(10).join(meal_lines)}
-**Additional Information:** {additional_info or "None provided"}
-
-Please provide analysis of my progress and any recommendations."""
-
-                send_message(message)
+    tracking_ui.display_daily_results(send_message)
 
 
 # --- User Profile Display ---
@@ -542,133 +309,8 @@ def display_user_profile():
             st.write(f"**Diet:** {', '.join(prefs)}")
 
 
-# --- Registration Form ---
-
-
 def registration_form():
-    st.title("Register New Account")
-    username = st.session_state.get("username", "")
-    password = st.session_state.get("password", "")
-    st.write(f"Username: **{username}**")
-
-    st.markdown("---")
-    st.subheader("Basic Information")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        weight = st.number_input("Weight (kg)", min_value=30, max_value=300, value=70)
-        height = st.number_input("Height (cm)", min_value=100, max_value=250, value=170)
-        age = st.number_input("Age", min_value=5, max_value=120, value=30)
-    with col2:
-        gender = st.selectbox("Gender", ["Male", "Female", "Other", "Prefer not to say"])
-        activity_level = st.selectbox("Activity Level", [
-            "Sedentary (desk job, no exercise)",
-            "Lightly active (light exercise 1-3 days/week)",
-            "Moderately active (moderate exercise 3-5 days/week)",
-            "Very active (hard exercise 6-7 days/week)",
-            "Extremely active (very hard exercise, physical job)",
-        ])
-
-    st.markdown("---")
-    st.subheader("Goals & Preferences")
-
-    col3, col4 = st.columns(2)
-    with col3:
-        primary_goal = st.selectbox("Primary Goal", [
-            "Lose weight", "Gain weight", "Maintain weight", "Build muscle",
-            "Improve health", "Increase energy", "Better sleep",
-        ])
-        dietary_preferences = st.multiselect("Dietary Preferences/Restrictions", [
-            "None", "Vegetarian", "Vegan", "Pescatarian", "Keto", "Paleo",
-            "Low-carb", "Low-fat", "Gluten-free", "Dairy-free", "Halal",
-            "Kosher", "Nut allergies", "Shellfish allergies",
-        ])
-    with col4:
-        cooking_experience = st.selectbox("Cooking Experience", [
-            "Beginner (prefer simple recipes)",
-            "Intermediate (comfortable with most recipes)",
-            "Advanced (enjoy complex cooking)",
-        ])
-        budget_range = st.selectbox("Weekly Food Budget", [
-            "$50-100", "$100-150", "$150-200", "$200-300", "$300+", "No specific budget",
-        ])
-
-    st.markdown("---")
-    st.subheader("Meal Schedule")
-
-    col5a, col5b = st.columns(2)
-    with col5a:
-        st.markdown("**Breakfast**")
-        breakfast_enabled = st.checkbox("I eat breakfast", value=True)
-        breakfast_location = st.selectbox("Breakfast location", ["At home", "On the go", "At work/office", "Varies"], key="breakfast_location")
-        breakfast_time = st.selectbox("Breakfast cooking time", ["0 minutes", "5-10 minutes", "15-20 minutes", "30+ minutes"], key="breakfast_time")
-
-        st.markdown("**Lunch**")
-        lunch_enabled = st.checkbox("I eat lunch", value=True)
-        lunch_location = st.selectbox("Lunch location", ["At work/office", "At home", "Restaurant/cafeteria", "Varies"], key="lunch_location")
-        lunch_time = st.selectbox("Lunch cooking time", ["0 minutes", "5-10 minutes", "15-20 minutes", "30+ minutes", "Meal prep"], key="lunch_time")
-
-    with col5b:
-        st.markdown("**Dinner**")
-        dinner_enabled = st.checkbox("I eat dinner", value=True)
-        dinner_location = st.selectbox("Dinner location", ["At home", "Restaurant", "At work", "Varies"], key="dinner_location")
-        dinner_time = st.selectbox("Dinner cooking time", ["0 minutes", "15-30 minutes", "30-60 minutes", "1+ hours", "Varies"], key="dinner_time")
-
-        st.markdown("**Snacks**")
-        snacks_enabled = st.checkbox("I eat snacks", value=True)
-        snacks_frequency = st.selectbox("Snack frequency", ["No snacks", "1/day", "2/day", "3+/day", "As needed"], key="snacks_frequency")
-        snacks_type = st.selectbox("Preferred snack type", ["Quick/ready-made", "Light prep", "Homemade", "Mixed", "Healthy only"], key="snacks_type")
-
-    st.markdown("---")
-    st.subheader("Health & Food Preferences")
-
-    health_conditions = st.multiselect("Health Conditions (optional)", [
-        "None", "Diabetes", "High blood pressure", "High cholesterol",
-        "Heart disease", "PCOS", "Thyroid issues", "IBS/Digestive issues",
-        "Food allergies", "Other",
-    ])
-    water_intake_goal = st.selectbox("Daily Water Intake Goal", ["1-2 liters", "2-3 liters", "3-4 liters", "4+ liters", "Not sure"])
-    favorite_cuisines = st.multiselect("Favorite Cuisines", [
-        "American", "Italian", "Mexican", "Asian", "Indian",
-        "Mediterranean", "Middle Eastern", "French", "African", "Latin American", "No preference",
-    ])
-    foods_to_avoid = st.text_area("Foods to avoid (optional)", height=60)
-    additional_notes = st.text_area("Additional notes (optional)", height=80)
-
-    if st.button("Complete Registration", type="primary"):
-        if not username or not password:
-            st.error("Username and password are required.")
-            return
-
-        profile = {
-            "weight": weight, "height": height, "age": age, "gender": gender,
-            "activity_level": activity_level, "primary_goal": primary_goal,
-            "dietary_preferences": dietary_preferences, "cooking_experience": cooking_experience,
-            "budget_range": budget_range,
-            "meal_schedule": {
-                "breakfast": {"enabled": breakfast_enabled, "location": breakfast_location, "cooking_time": breakfast_time},
-                "lunch": {"enabled": lunch_enabled, "location": lunch_location, "cooking_time": lunch_time},
-                "dinner": {"enabled": dinner_enabled, "location": dinner_location, "cooking_time": dinner_time},
-                "snacks": {"enabled": snacks_enabled, "frequency": snacks_frequency, "type": snacks_type},
-            },
-            "health_conditions": health_conditions, "water_intake_goal": water_intake_goal,
-            "favorite_cuisines": favorite_cuisines, "foods_to_avoid": foods_to_avoid,
-            "additional_notes": additional_notes, "registration_date": datetime.now().isoformat(),
-        }
-
-        success = register_user(username, password, profile, USERS_FILE)
-        if success:
-            st.session_state["is_new_user"] = False
-            st.session_state["initialized"] = True
-            st.session_state["show_register"] = False
-
-            memory = MemoryManager(username, SECRETS_DIR)
-            memory.migrate_from_legacy(profile)
-
-            st.success("Registration complete! Welcome to NutriCoach!")
-            st.rerun()
-        else:
-            st.error("Username already exists. Please choose another.")
+    registration_ui.registration_form(USERS_FILE)
 
 
 # --- Landing Page ---

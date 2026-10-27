@@ -6,6 +6,48 @@ keeps a user profile and journal; its Recipe Lab tab analyzes recipes within the
 same user session.
 NutriCoach and its Recipe Lab tab are experimental; their nutrition outputs are estimates.
 
+## Read the code and evidence
+
+The application separates conversation state, deterministic tools and structured
+user records. Recipe classification and food-photo estimation have separate
+training and evaluation paths.
+
+| Component | Start here | What to inspect |
+|---|---|---|
+| Agent loop | [agent.py](nut_agent/nutricoach/agent.py) | Context assembly, bounded history, tool routing and SQLite persistence |
+| Tool contract | [tools.py](nut_agent/nutricoach/tools.py) | Nutrition calculations and explicit journal updates |
+| Structured memory | [memory.py](nut_agent/shared/memory.py) | Per-user profiles, daily logs and context construction |
+| Photo review | [review.py](nut_agent/nutricoach/food_vision/review.py) | Editable estimates, nutrient scaling and validation before saving |
+| Recipe classifiers | [local_models.py](nut_agent/recipe_lab/local_models.py) | Frozen embeddings, cache identity and supervised heads |
+| Food-photo evaluation | [evaluate_nutrition5k.py](nut_agent/nutricoach/food_vision/evaluate_nutrition5k.py) | Aligned targets, method configuration and resumable predictions |
+
+Start with the agent and one tool to follow a request from chat to a structured
+record. The [Food Vision reports](nut_agent/nutricoach/food_vision/README.md)
+separate Nutrition5k measurements from app functionality. Recipe classification
+and nutrition estimation are different tasks; historical recipe results do not
+validate the current embedding model or photo methods.
+
+A small, offline example follows the photo-review boundary. It changes a
+quantity and recomputes nutrients without calling a model or saving a journal:
+
+```python
+from nut_agent.nutricoach.food_vision.base import FoodAnalysisResult, FoodItem
+from nut_agent.nutricoach.food_vision.review import photo_edit_rows, apply_photo_edits
+
+estimate = FoodAnalysisResult(method="example", food_items=[
+    FoodItem(name="Rice", quantity_grams=100, calories=130,
+             protein_g=2.7, carbs_g=28, fat_g=0.3),
+])
+estimate.compute_totals()
+rows = photo_edit_rows(estimate.to_dict())
+rows[0]["quantity_grams"] = 150
+reviewed = apply_photo_edits(estimate.to_dict(), rows)
+assert reviewed.total_calories == 195
+```
+
+These values are synthetic; the example demonstrates correction and scaling,
+not model accuracy.
+
 ## NutriCoach
 
 After registering and entering a profile, users can chat about their nutrition
@@ -40,6 +82,9 @@ The [Food Vision README](nut_agent/nutricoach/food_vision/README.md) describes e
 method, its training data, the evaluation protocol and the result reports.
 
 ## Recipe Lab
+
+The [component guide](nut_agent/recipe_lab/README.md) follows one recipe through
+parsing, embeddings, cached heads and optional LLM estimates.
 
 Enter a recipe description to analyze it, or compare two recipes side by side.
 Recipe Lab is available only as a tab inside NutriCoach.
@@ -116,8 +161,11 @@ gitignored `data/paper_releases/`; its weights use the Hugging Face cache.
 
 ## Code and tests
 
-`nutricoach/` contains the agent, tools, UI, and food vision methods;
-`recipe_lab/` contains the recipe UI and prediction pipeline. `shared/` holds
+`nut_agent/nutricoach/` contains the agent, tools, UI, and food vision methods.
+The Streamlit entry point delegates photo, registration and tracking views to
+`photo_ui.py`, `registration_ui.py` and `tracking_ui.py`; session lifecycle and
+provider settings stay in `app.py`. `nut_agent/recipe_lab/` contains the recipe UI
+and prediction pipeline. `nut_agent/shared/` holds
 configuration, authentication, Pydantic schemas, and structured memory.
 Recipe classifiers and supervised food-vision models reuse the installed `ml_pipeline` package from [ML Playground](https://github.com/oremaz/ml-playground), pinned to a specific Git commit in the dependency specifications.
 
@@ -150,14 +198,17 @@ The one-shot VLM photo analyzer keeps its guided nutrition prompt enabled by def
 
 When running CPU checks on a shared VM, set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 LOKY_MAX_CPU_COUNT=2` to keep test workers within the allocated resources.
 
-## Split validation (2026-10-14)
+## Reproducibility
 
-The CPU and mock-based suite passed: **204 passed, 4 skipped**. The GPU recipe, live OpenRouter, and live local-Qwen test modules were excluded. The application used the installed `ml_pipeline` wheel in a separate validation interpreter, with its declared NumPy, SciPy, scikit-learn, pandas, LightGBM, Streamlit, LangGraph, LangChain, and OpenAI versions installed.
+App commands, provider defaults, widget keys, journal formats and experiment
+entry points are preserved. Training scripts, Food Vision job scripts, dataset
+paths and checkpoint paths are unchanged. Reproduce an experiment with its
+recorded data, model revisions, configuration and environment; launching the app
+does not reproduce a benchmark.
 
-Three failures were reproduced in the original checkout before updating the copied tests: photo-method expectations now include the existing one-shot VLM, Recipe Lab uses the shared reasoning setting, and the DPF checkpoint test mocks model creation without a download. These test changes preserve application behavior. `langgraph-prebuilt` is pinned to the original compatible version to prevent an incompatible newer dependency from being selected.
+See the [split validation record](docs/split_validation.md) for the historical
+migration checks and their limitations. Those counts describe the original
+validation checkout.
 
-This migration does not validate live providers, GPU training, or full real-model food-photo inference. The copied FoodLMM checkpoint and Nutrition5k datasets remain local and ignored by Git.
-
-The full NutriCoach Streamlit entry point passed a startup check without logging in or loading large models. Default recipe dataset and checkpoint paths were also checked.
-
-The shared framework also built and installed successfully directly from the pinned public Git commit. The applications do not require a sibling `ml-playground` checkout.
+The [2026-10-27 cleanup checks](docs/cleanup_validation.md) record the current
+validation commands, results and environment limitations.
